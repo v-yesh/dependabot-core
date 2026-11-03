@@ -900,6 +900,34 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           expect(certifi["markers"]).to eq("extra == \"security\"")
         end
       end
+
+      context "with an extra-only sub-dependency that also has a compound environment marker" do
+        let(:pyproject_fixture_name) { "poetry_v2_pep621_only_compound_marker.toml" }
+        let(:lockfile_fixture_name) { "poetry_v2_pep621_only_compound_marker.lock" }
+        let(:dependency) do
+          Dependabot::Dependency.new(
+            name: dependency_name,
+            version: "1.2.2",
+            previous_version: "1.3.1",
+            package_manager: "pip",
+            requirements: [],
+            previous_requirements: [],
+            subdependency_metadata: [{ production: true }]
+          )
+        end
+        let(:dependency_name) { "exceptiongroup" }
+
+        it "preserves the non-extra part of the marker, rather than dropping it" do
+          updated_lockfile = updated_files.find { |f| f.name == "poetry.lock" }
+
+          lockfile_obj = TomlRB.parse(updated_lockfile.content)
+          exceptiongroup = lockfile_obj["package"].find { |d| d["name"] == "exceptiongroup" }
+
+          expect(exceptiongroup["version"]).to eq("1.2.2")
+          expect(exceptiongroup["optional"]).to be(true)
+          expect(exceptiongroup["markers"]).to eq("extra == \"security\" and python_version < \"3.11\"")
+        end
+      end
     end
 
     context "with a non-package mode project" do

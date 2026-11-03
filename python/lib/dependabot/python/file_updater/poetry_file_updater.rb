@@ -282,33 +282,61 @@ module Dependabot
 
         sig { params(project_object: T::Hash[String, T.untyped], dep: Dependabot::Dependency).void }
         def pin_pep621_subdependency!(project_object, dep)
-          pin = "#{dep.name}==#{dep.version}"
-          extras = pep621_subdependency_extras(dep)
+          extra_markers = pep621_subdependency_extra_markers(dep)
 
-          if extras.empty?
-            (project_object["dependencies"] ||= []) << pin
+          if extra_markers.empty?
+            (project_object["dependencies"] ||= []) << "#{dep.name}==#{dep.version}"
           else
             optional_deps = (project_object["optional-dependencies"] ||= {})
-            extras.each { |extra| (optional_deps[extra] ||= []) << pin }
+            extra_markers.each do |extra, remaining_marker|
+              pin = "#{dep.name}==#{dep.version}"
+              pin += "; #{remaining_marker}" if remaining_marker
+              (optional_deps[extra] ||= []) << pin
+            end
           end
         end
+
+        # Matches a single `extra == "name"` clause, or several joined by "or" (optionally
+        # parenthesised) - how Poetry writes a package needed by more than one extra.
+        EXTRA_CLAUSE = '\(?\s*extra\s*==\s*"[^"]+"(?:\s+or\s+extra\s*==\s*"[^"]+")*\s*\)?'
+        EXTRA_ONLY_MARKER = /\A#{EXTRA_CLAUSE}\z/
+        EXTRA_CLAUSE_THEN_REST = /\A#{EXTRA_CLAUSE}\s+and\s+(?<rest>.+)\z/
+        REST_THEN_EXTRA_CLAUSE = /\A(?<rest>.+?)\s+and\s+#{EXTRA_CLAUSE}\z/
+        private_constant :EXTRA_CLAUSE, :EXTRA_ONLY_MARKER, :EXTRA_CLAUSE_THEN_REST, :REST_THEN_EXTRA_CLAUSE
 
         # Reads the pre-update lockfile to find which extra(s), if any, a pure sub-dependency was
         # scoped to (Poetry records this as `markers = "extra == \"name\""` on its package entry),
         # so the pin doesn't promote an extra-only package into an unconditional main dependency.
+        # Maps each matching extra to any remaining, non-extra marker condition (e.g. a platform or
+        # Python version constraint) so that's preserved on the pin too, rather than silently dropped.
         # PEP 735 dependency-groups aren't handled here - this codebase doesn't otherwise write
         # [dependency-groups] entries, so a dev-only sub-dependency still falls back to being
         # pinned as a main dependency on the scratch manifest only.
-        sig { params(dep: Dependabot::Dependency).returns(T::Array[String]) }
-        def pep621_subdependency_extras(dep)
+        sig { params(dep: Dependabot::Dependency).returns(T::Hash[String, T.nilable(String)]) }
+        def pep621_subdependency_extra_markers(dep)
           package = poetry_lock_packages.find { |pkg| normalise(pkg.name) == dep.name }
-          return [] unless package
-          return [] unless package.optional
+          return {} unless package
+          return {} unless package.optional
 
-          markers = package.markers
-          return [] unless markers
+          package.marker_strings.each_with_object({}) do |marker, extras|
+            extra_names = marker.scan(/extra\s*==\s*"([^"]+)"/).flatten
+            next if extra_names.empty?
 
-          markers.scan(/extra\s*==\s*"([^"]+)"/).flatten
+            remainder = marker_without_extra_clause(marker)
+            extra_names.each { |extra| extras[extra] = remainder }
+          end
+        end
+
+        # Strips the extra-selecting clause(s) from a marker, leaving any other condition intact
+        # (e.g. "extra == \"security\" and sys_platform == \"win32\"" -> "sys_platform == \"win32\"").
+        # Falls back to the marker unchanged if it can't confidently isolate the remainder - that's
+        # still valid PEP 508 syntax on an entry already scoped to the extra, just slightly redundant.
+        sig { params(marker: String).returns(T.nilable(String)) }
+        def marker_without_extra_clause(marker)
+          return if marker.match?(EXTRA_ONLY_MARKER)
+
+          match = marker.match(EXTRA_CLAUSE_THEN_REST) || marker.match(REST_THEN_EXTRA_CLAUSE)
+          match ? T.must(match[:rest]) : marker
         end
 
         sig { returns(T::Array[Dependabot::Python::FileParser::PoetryLock::Package]) }
