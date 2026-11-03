@@ -25,7 +25,7 @@ module Dependabot
   module Python
     class UpdateChecker
       # This class does version resolution for pyproject.toml files.
-      class PoetryVersionResolver # rubocop:disable Metrics/ClassLength
+      class PoetryVersionResolver
         extend T::Sig
         extend T::Helpers
 
@@ -379,20 +379,17 @@ module Dependabot
         def pin_pep621_subdependency!(project_object, updated_requirement)
           packages = PoetryPep621SubdependencyScope.packages_from_lockfile(lockfile)
           package = packages.find { |pkg| normalise(pkg.name) == dependency.name }
-          extra_markers, main_marker = PoetryPep621SubdependencyScope.pin_targets(package)
+          extra_markers, main_marker, scope_unknown = PoetryPep621SubdependencyScope.pin_targets(package)
+          main_pin, extra_pins = PoetryPep621SubdependencyScope.pins_for(
+            "#{dependency.name}#{updated_requirement}", extra_markers, main_marker, scope_unknown
+          )
 
-          if extra_markers.empty?
-            pin = "#{dependency.name}#{updated_requirement}"
-            pin += "; #{main_marker}" if main_marker
-            (project_object["dependencies"] ||= []) << pin
-          else
-            optional_deps = (project_object["optional-dependencies"] ||= {})
-            extra_markers.each do |extra, remaining_marker|
-              extra_pin = "#{dependency.name}#{updated_requirement}"
-              extra_pin += "; #{remaining_marker}" if remaining_marker
-              (optional_deps[extra] ||= []) << extra_pin
-            end
-          end
+          (project_object["dependencies"] ||= []) << main_pin if main_pin
+
+          return if extra_pins.empty?
+
+          optional_deps = (project_object["optional-dependencies"] ||= {})
+          extra_pins.each { |extra, extra_pin| (optional_deps[extra] ||= []) << extra_pin }
         end
 
         sig { params(dep_array: T::Array[String], requirement: String).returns(T::Boolean) }

@@ -451,12 +451,8 @@ RSpec.describe namespace::PoetryVersionResolver do
     end
   end
 
-  describe "#updated_pyproject_content" do
-    subject(:updated_pyproject_content) do
-      resolver.send(:updated_pyproject_content, updated_requirement: updated_requirement)
-    end
-
-    let(:updated_requirement) { "==0.4.4" }
+  describe "#resolvable?" do
+    subject(:resolvable) { resolver.resolvable?(version: Gem::Version.new("0.4.4")) }
 
     context "with a pure sub-dependency of a PEP 621 only project that has a plain environment marker" do
       let(:dependency_name) { "colorama" }
@@ -468,7 +464,15 @@ RSpec.describe namespace::PoetryVersionResolver do
       # Without the marker, the scratch pin would force colorama onto every platform - which,
       # for a genuinely Windows-only release, could make an otherwise-valid update unresolvable.
       it "preserves the marker on the scratch pin, rather than making it unconditional" do
-        pyproject_object = TomlRB.parse(updated_pyproject_content)
+        scratch_pyproject_content = nil
+        allow(resolver).to receive(:run_poetry_command).and_wrap_original do |original, *args, **kwargs|
+          scratch_pyproject_content ||= File.read("pyproject.toml")
+          original.call(*args, **kwargs)
+        end
+
+        resolvable
+
+        pyproject_object = TomlRB.parse(scratch_pyproject_content)
         pin = pyproject_object["project"]["dependencies"].find { |dep| dep.start_with?("colorama") }
 
         expect(pin).to eq("colorama==0.4.4; platform_system == \"Windows\"")
