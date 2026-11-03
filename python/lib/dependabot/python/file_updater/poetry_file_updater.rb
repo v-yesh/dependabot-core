@@ -14,6 +14,7 @@ require "dependabot/python/file_updater"
 require "dependabot/python/native_helpers"
 require "dependabot/python/name_normaliser"
 require "dependabot/python/poetry_plugin_installer"
+require "dependabot/python/poetry_pep621_subdependency_scope"
 require "dependabot/package/release_cooldown_options"
 
 module Dependabot
@@ -282,78 +283,23 @@ module Dependabot
 
         sig { params(project_object: T::Hash[String, T.untyped], dep: Dependabot::Dependency).void }
         def pin_pep621_subdependency!(project_object, dep)
-          extra_markers = pep621_subdependency_extra_markers(dep)
+          package = PoetryPep621SubdependencyScope.packages_from_lockfile(lockfile).find do |pkg|
+            normalise(pkg.name) == dep.name
+          end
+          extra_markers, main_marker = PoetryPep621SubdependencyScope.pin_targets(package)
 
           if extra_markers.empty?
-            (project_object["dependencies"] ||= []) << "#{dep.name}==#{dep.version}"
+            pin = "#{dep.name}==#{dep.version}"
+            pin += "; #{main_marker}" if main_marker
+            (project_object["dependencies"] ||= []) << pin
           else
             optional_deps = (project_object["optional-dependencies"] ||= {})
             extra_markers.each do |extra, remaining_marker|
-              pin = "#{dep.name}==#{dep.version}"
-              pin += "; #{remaining_marker}" if remaining_marker
-              (optional_deps[extra] ||= []) << pin
+              extra_pin = "#{dep.name}==#{dep.version}"
+              extra_pin += "; #{remaining_marker}" if remaining_marker
+              (optional_deps[extra] ||= []) << extra_pin
             end
           end
-        end
-
-        # Matches a single `extra == "name"` clause, or several joined by "or" - how Poetry writes a
-        # package needed by more than one extra. The group's enclosing parens, if any, are only
-        # matched as a tight, balanced pair immediately around the group itself: without that,
-        # a marker where parens wrap a larger expression (e.g. a whole
-        # `(extra == "x" and sys_platform == "win32")` clause) would have its opening paren consumed
-        # here without its matching close, leaving an unbalanced, invalid fragment in the remainder.
-        EXTRA_GROUP = 'extra\s*==\s*"[^"]+"(?:\s+or\s+extra\s*==\s*"[^"]+")*'
-        EXTRA_CLAUSE = T.let("(?:#{EXTRA_GROUP}|\\(\\s*#{EXTRA_GROUP}\\s*\\))".freeze, String)
-        EXTRA_ONLY_MARKER = /\A#{EXTRA_CLAUSE}\z/
-        EXTRA_CLAUSE_THEN_REST = /\A#{EXTRA_CLAUSE}\s+and\s+(?<rest>.+)\z/
-        REST_THEN_EXTRA_CLAUSE = /\A(?<rest>.+?)\s+and\s+#{EXTRA_CLAUSE}\z/
-        private_constant :EXTRA_GROUP,
-                         :EXTRA_CLAUSE,
-                         :EXTRA_ONLY_MARKER,
-                         :EXTRA_CLAUSE_THEN_REST,
-                         :REST_THEN_EXTRA_CLAUSE
-
-        # Reads the pre-update lockfile to find which extra(s), if any, a pure sub-dependency was
-        # scoped to (Poetry records this as `markers = "extra == \"name\""` on its package entry),
-        # so the pin doesn't promote an extra-only package into an unconditional main dependency.
-        # Maps each matching extra to any remaining, non-extra marker condition (e.g. a platform or
-        # Python version constraint) so that's preserved on the pin too, rather than silently dropped.
-        # PEP 735 dependency-groups aren't handled here - this codebase doesn't otherwise write
-        # [dependency-groups] entries, so a dev-only sub-dependency still falls back to being
-        # pinned as a main dependency on the scratch manifest only.
-        sig { params(dep: Dependabot::Dependency).returns(T::Hash[String, T.nilable(String)]) }
-        def pep621_subdependency_extra_markers(dep)
-          package = poetry_lock_packages.find { |pkg| normalise(pkg.name) == dep.name }
-          return {} unless package
-          return {} unless package.optional
-
-          package.marker_strings.each_with_object({}) do |marker, extras|
-            extra_names = marker.scan(/extra\s*==\s*"([^"]+)"/).flatten
-            next if extra_names.empty?
-
-            remainder = marker_without_extra_clause(marker)
-            extra_names.each { |extra| extras[extra] = remainder }
-          end
-        end
-
-        # Strips the extra-selecting clause(s) from a marker, leaving any other condition intact
-        # (e.g. "extra == \"security\" and sys_platform == \"win32\"" -> "sys_platform == \"win32\"").
-        # Falls back to the marker unchanged if it can't confidently isolate the remainder - that's
-        # still valid PEP 508 syntax on an entry already scoped to the extra, just slightly redundant.
-        sig { params(marker: String).returns(T.nilable(String)) }
-        def marker_without_extra_clause(marker)
-          return if marker.match?(EXTRA_ONLY_MARKER)
-
-          match = marker.match(EXTRA_CLAUSE_THEN_REST) || marker.match(REST_THEN_EXTRA_CLAUSE)
-          match ? T.must(match[:rest]) : marker
-        end
-
-        sig { returns(T::Array[Dependabot::Python::FileParser::PoetryLock::Package]) }
-        def poetry_lock_packages
-          @poetry_lock_packages ||= T.let(
-            lockfile ? Dependabot::Python::FileParser::PoetryLock.from_file(T.must(lockfile)).packages : [],
-            T.nilable(T::Array[Dependabot::Python::FileParser::PoetryLock::Package])
-          )
         end
 
         sig { params(pyproject_content: String).returns(String) }

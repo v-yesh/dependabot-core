@@ -19,12 +19,13 @@ require "dependabot/python/native_helpers"
 require "dependabot/python/authed_url_builder"
 require "dependabot/python/name_normaliser"
 require "dependabot/python/poetry_plugin_installer"
+require "dependabot/python/poetry_pep621_subdependency_scope"
 
 module Dependabot
   module Python
     class UpdateChecker
       # This class does version resolution for pyproject.toml files.
-      class PoetryVersionResolver
+      class PoetryVersionResolver # rubocop:disable Metrics/ClassLength
         extend T::Sig
         extend T::Helpers
 
@@ -368,9 +369,30 @@ module Dependabot
           updated = dep_arrays.map { |arr| update_pep621_dependency_requirement(arr, updated_requirement) }.any?
           return if updated
 
-          # This is a sub-dependency not declared anywhere in the pyproject.toml; add it so Poetry's
-          # solver is forced to consider the target version.
-          (project_object["dependencies"] ||= []) << "#{dependency.name}#{updated_requirement}"
+          # A sub-dependency not declared anywhere in the pyproject.toml; pin it so Poetry's solver
+          # considers the target version, preserving its pre-update lockfile scope - an unconditional
+          # pin could force it outside its real conditions and make a valid update unresolvable.
+          pin_pep621_subdependency!(project_object, updated_requirement)
+        end
+
+        sig { params(project_object: T::Hash[String, T.untyped], updated_requirement: String).void }
+        def pin_pep621_subdependency!(project_object, updated_requirement)
+          packages = PoetryPep621SubdependencyScope.packages_from_lockfile(lockfile)
+          package = packages.find { |pkg| normalise(pkg.name) == dependency.name }
+          extra_markers, main_marker = PoetryPep621SubdependencyScope.pin_targets(package)
+
+          if extra_markers.empty?
+            pin = "#{dependency.name}#{updated_requirement}"
+            pin += "; #{main_marker}" if main_marker
+            (project_object["dependencies"] ||= []) << pin
+          else
+            optional_deps = (project_object["optional-dependencies"] ||= {})
+            extra_markers.each do |extra, remaining_marker|
+              extra_pin = "#{dependency.name}#{updated_requirement}"
+              extra_pin += "; #{remaining_marker}" if remaining_marker
+              (optional_deps[extra] ||= []) << extra_pin
+            end
+          end
         end
 
         sig { params(dep_array: T::Array[String], requirement: String).returns(T::Boolean) }

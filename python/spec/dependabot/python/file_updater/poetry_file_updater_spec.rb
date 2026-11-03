@@ -956,6 +956,70 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           expect(colorama["markers"].count("(")).to eq(colorama["markers"].count(")"))
         end
       end
+
+      context "with a non-optional (main) sub-dependency that has a plain environment marker" do
+        let(:pyproject_fixture_name) { "poetry_v2_pep621_only_main_env_marker.toml" }
+        let(:lockfile_fixture_name) { "poetry_v2_pep621_only_main_env_marker.lock" }
+        let(:dependency) do
+          Dependabot::Dependency.new(
+            name: dependency_name,
+            version: "0.4.4",
+            previous_version: "0.4.6",
+            package_manager: "pip",
+            requirements: [],
+            previous_requirements: [],
+            subdependency_metadata: [{ production: true }]
+          )
+        end
+        let(:dependency_name) { "colorama" }
+
+        it "preserves the marker, rather than making the pin unconditional" do
+          updated_lockfile = updated_files.find { |f| f.name == "poetry.lock" }
+
+          lockfile_obj = TomlRB.parse(updated_lockfile.content)
+          colorama = lockfile_obj["package"].find { |d| d["name"] == "colorama" }
+
+          expect(colorama["version"]).to eq("0.4.4")
+          expect(colorama["optional"]).to be(false)
+          expect(colorama["markers"]).to eq("platform_system == \"Windows\"")
+        end
+      end
+
+      context "with a sub-dependency needed by two extras under different, distinct conditions" do
+        let(:pyproject_fixture_name) { "poetry_v2_pep621_only_bare_or_marker.toml" }
+        let(:lockfile_fixture_name) { "poetry_v2_pep621_only_bare_or_marker.lock" }
+        let(:dependency) do
+          Dependabot::Dependency.new(
+            name: dependency_name,
+            version: "0.4.4",
+            previous_version: "0.4.6",
+            package_manager: "pip",
+            requirements: [],
+            previous_requirements: [],
+            subdependency_metadata: [{ production: true }]
+          )
+        end
+        let(:dependency_name) { "colorama" }
+
+        it "preserves the full compound marker on both extras, rather than only one extra's condition" do
+          updated_lockfile = updated_files.find { |f| f.name == "poetry.lock" }
+
+          lockfile_obj = TomlRB.parse(updated_lockfile.content)
+          colorama = lockfile_obj["package"].find { |d| d["name"] == "colorama" }
+
+          expect(colorama["version"]).to eq("0.4.4")
+          expect(colorama["optional"]).to be(true)
+
+          # Poetry re-derives/restructures the final marker during resolution, so we assert on
+          # the conditions it must preserve rather than an exact string: both extras' own
+          # distinct platform conditions must still be present, not collapsed into one.
+          markers = colorama["markers"]
+          expect(markers).to include("extra == \"lint\"")
+          expect(markers).to include("extra == \"test\"")
+          expect(markers).to include("platform_system == \"Windows\"")
+          expect(markers).to include("sys_platform == \"win32\"")
+        end
+      end
     end
 
     context "with a non-package mode project" do
