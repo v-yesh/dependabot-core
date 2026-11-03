@@ -296,13 +296,22 @@ module Dependabot
           end
         end
 
-        # Matches a single `extra == "name"` clause, or several joined by "or" (optionally
-        # parenthesised) - how Poetry writes a package needed by more than one extra.
-        EXTRA_CLAUSE = '\(?\s*extra\s*==\s*"[^"]+"(?:\s+or\s+extra\s*==\s*"[^"]+")*\s*\)?'
+        # Matches a single `extra == "name"` clause, or several joined by "or" - how Poetry writes a
+        # package needed by more than one extra. The group's enclosing parens, if any, are only
+        # matched as a tight, balanced pair immediately around the group itself: without that,
+        # a marker where parens wrap a larger expression (e.g. a whole
+        # `(extra == "x" and sys_platform == "win32")` clause) would have its opening paren consumed
+        # here without its matching close, leaving an unbalanced, invalid fragment in the remainder.
+        EXTRA_GROUP = 'extra\s*==\s*"[^"]+"(?:\s+or\s+extra\s*==\s*"[^"]+")*'
+        EXTRA_CLAUSE = T.let("(?:#{EXTRA_GROUP}|\\(\\s*#{EXTRA_GROUP}\\s*\\))".freeze, String)
         EXTRA_ONLY_MARKER = /\A#{EXTRA_CLAUSE}\z/
         EXTRA_CLAUSE_THEN_REST = /\A#{EXTRA_CLAUSE}\s+and\s+(?<rest>.+)\z/
         REST_THEN_EXTRA_CLAUSE = /\A(?<rest>.+?)\s+and\s+#{EXTRA_CLAUSE}\z/
-        private_constant :EXTRA_CLAUSE, :EXTRA_ONLY_MARKER, :EXTRA_CLAUSE_THEN_REST, :REST_THEN_EXTRA_CLAUSE
+        private_constant :EXTRA_GROUP,
+                         :EXTRA_CLAUSE,
+                         :EXTRA_ONLY_MARKER,
+                         :EXTRA_CLAUSE_THEN_REST,
+                         :REST_THEN_EXTRA_CLAUSE
 
         # Reads the pre-update lockfile to find which extra(s), if any, a pure sub-dependency was
         # scoped to (Poetry records this as `markers = "extra == \"name\""` on its package entry),

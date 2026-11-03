@@ -928,6 +928,34 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           expect(exceptiongroup["markers"]).to eq("extra == \"security\" and python_version < \"3.11\"")
         end
       end
+
+      context "with a sub-dependency whose marker wraps a compound extra condition in parentheses" do
+        let(:pyproject_fixture_name) { "poetry_v2_pep621_only_paren_marker.toml" }
+        let(:lockfile_fixture_name) { "poetry_v2_pep621_only_paren_marker.lock" }
+        let(:dependency) do
+          Dependabot::Dependency.new(
+            name: dependency_name,
+            version: "0.4.4",
+            previous_version: "0.4.6",
+            package_manager: "pip",
+            requirements: [],
+            previous_requirements: [],
+            subdependency_metadata: [{ production: true }]
+          )
+        end
+        let(:dependency_name) { "colorama" }
+
+        it "leaves the marker's parentheses balanced, rather than producing an invalid fragment" do
+          updated_lockfile = updated_files.find { |f| f.name == "poetry.lock" }
+
+          lockfile_obj = TomlRB.parse(updated_lockfile.content)
+          colorama = lockfile_obj["package"].find { |d| d["name"] == "colorama" }
+
+          expect(colorama["version"]).to eq("0.4.4")
+          expect(colorama["optional"]).to be(true)
+          expect(colorama["markers"].count("(")).to eq(colorama["markers"].count(")"))
+        end
+      end
     end
 
     context "with a non-package mode project" do
